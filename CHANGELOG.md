@@ -6,6 +6,138 @@ Path of Exile 2; "0.5.x" references are the game patch the build targets.
 Sections marked **For plugin devs** describe newly exposed APIs you can read
 from your own plugins via `Core.*`.
 
+## [2.8.0] - 2026-09-15
+
+### Added
+
+- **PlayerBuffBar totem counters.** Buff bars can now show the player's living
+  deployed totems, grouped by totem type with optional automatically downloaded
+  wiki icons.
+- **For plugin devs: deployed-entity records.** `Actor` now exposes deployed
+  entity records, including ownership and source-skill identifiers.
+
+### Changed
+
+- **Atlas2 Head of the King planner.** Start maps now come from the game's live,
+  dynamically generated selectable set for both the introductory quest and
+  repeat Rites. Reward routes are ranked with editable Forbidden Rites economy
+  defaults, while non-item utility rewards remain neutral.
+
+### Fixed
+
+- **Atlas2 Rite of the Nameless prediction.** Removed a stale special-map field
+  check that excluded valid maps, accepted selectable-start sets larger than 64
+  nodes, and corrected the Greater Exalted Orb reward quantity.
+- **Trial of the Sekhemas terrain.** Raised the guarded terrain-size ceiling for
+  legitimate large Trial layouts while retaining the exact tile-vector shape
+  validation used to reject invalid memory data.
+
+## [2.7.5] - 2026-09-11
+
+### Fixed
+
+- **Controller-mode map detection.** Updated the controller map-parent offset
+  after the game layout changed, restoring map access when using a controller.
+- **LootValue poe2scout requests.** Switched price requests to poe2scout's
+  current API host and reject non-JSON responses so provider failures are
+  detected cleanly instead of being treated as valid price data.
+
+## [2.7.4] - 2026-09-07
+
+### Fixed
+
+- **LootValue price-provider failover.** Slow poe2scout and poe.ninja requests
+  now time out without surfacing `TaskCanceledException` first-chance breaks.
+  After two consecutive request failures, LootValue automatically switches to
+  the other provider, preserves its saved preference, and reports the active
+  fallback in settings. Provider requests use a short 10-second deadline so an
+  outage cannot leave the plugin showing `Loading...` for roughly 90 seconds.
+- **Gemcutting panel detection.** Skill and Support Gemcutting screens now count
+  as large blocking panels using their conditionally visible `[53][3]` and
+  `[54][3]` UI elements.
+- **Radar minimap layer parity.** The minimap now draws the walkable-map
+  outlines, terrain POIs, and POI paths already shown on the large map, with
+  every layer clipped to the minimap bounds.
+
+## [2.7.3] - 2026-09-05
+
+### Changed
+
+- **Forbidden Rites economy defaults.** LootValue, LootTracker, and
+  RunecraftHelper now default to the current league and migrate saved untouched
+  Runes of Aldur defaults once, while preserving later explicit selections.
+
+## [2.7.2] - 2026-09-05
+
+### Fixed
+
+- **Radar in the Trial of the Sekhemas.** Legitimate large Trial terrain now
+  passes core validation, restoring walkable-map outlines while retaining an
+  exact tile-vector shape check against invalid offset data.
+- **Atlas2 Ritual prediction.** Updated the 0.5.5 Ritual stat-table IDs, reward
+  pool conditions, and shifted stats pointer chain used by the Head of the King
+  planner.
+- **Atlas2 font scaling.** Planner and map-label scaling no longer leaks into
+  GameHelper windows rendered later in the frame.
+
+## [2.7.1] - 2026-09-05
+
+### Added
+
+- **RitualWispAlert plugin.** Incorporated the former RitualHelper wisp-range
+  visualization under its own focused name. It draws only the configurable
+  Ritual wisp circle, imports existing RitualHelper circle settings, and leaves
+  Ritual reward pricing in LootValue.
+
+## [2.7.0] - 2026-09-05
+
+### Added
+
+- **PlayerBuffBar plugin.** Added configurable buff and resource bars with
+  duration, stack-count, and skill-alias support.
+- **OffsetHelper recovery tooling.** Added diagnostics and constrained
+  semantic recovery for shifted static patterns, Area Instance fields, and UI
+  panel chains to make patch-day failures easier to identify and repair.
+
+### Changed
+
+- **Updated for Path of Exile 2 patch 0.5.5.** Refreshed game-state,
+  Area Instance, World Area, UI-element, map UI, Atlas-node, and related plugin
+  offsets and signatures. Thanks to **YokkenUA** for finding and sharing many
+  updated offsets used in this release.
+- **Settings navigation redesigned.** Replaced tab navigation with a side menu,
+  added a minimize control, and prevented plugin rendering over settings
+  windows.
+- **Unified item pricing.** LootValue now prices ground, stash, inventory, and
+  Ritual reward, and Currency Exchange items, replacing the separate
+  StashValueByZx0 and RitualHelper pricing implementations. Existing stash
+  display settings are imported on first run.
+- **RitualHelper retired.** The standalone plugin is no longer built or shipped;
+  Ritual reward values now use LootValue's maintained item pipeline. Its separate
+  Ritual wisp-range circle is not included in LootValue.
+- **Atlas2 content and routing expanded.** Added current content mappings,
+  persistent fog-node data, mist nodes, Ritual-line tools, and Uncharted Waters
+  ship and leyline visualization.
+- **Radar coverage expanded.** Improved area-change handling, map points of
+  interest, hidden-monster presentation, and Abyss, Delirium, and Azmeri Spirit
+  handling.
+
+### Fixed
+
+- **Patch 0.5.5 runtime recovery.** Fixed game-state attachment, area changes,
+  entities, terrain, panel visibility, passive-tree detection, radar scaling,
+  map transitions, and World Area details after the game layout changes.
+- **Atlas2 after patch 0.5.5.** Restored map names, topology, completion and
+  accessibility state, content and Delirious values, ship reads, and the
+  refreshed content-token table.
+- **LootValue after patch 0.5.5.** Restored stash and inventory item pointers
+  and anchored ground-loot labels. Special and scrollable stash tabs are
+  validated, cached, clipped, and throttled to avoid invalid reads and stalls.
+- **LootValue data refresh.** Accepts current poe2scout response shapes,
+  structured unique modifiers, and currency entries with missing metadata.
+- **AutoHotKeyTrigger startup exception.** Empty dynamic-condition expressions
+  remain uncompiled until a condition is entered.
+
 ## [2.6.0] - 2026-07-17
 
 ### Added
@@ -55,7 +187,8 @@ from your own plugins via `Core.*`.
 - **LootValue poe2scout refresh.** Accepts the current top-level array returned by
   poe2scout's leagues endpoint, while remaining compatible with the previous
   object-wrapped and string-wrapped response shapes. Currency entries with null
-  item metadata are now parsed without aborting the category.
+  item metadata and unique-item modifiers represented as structured objects are
+  now parsed without aborting the category.
 
 ## [2.5.2] - 2026-07-11
 
@@ -267,6 +400,7 @@ from your own plugins via `Core.*`.
 - Disabled plugins' settings being overwritten on close.
 - Co-op (multiplayer) read fix.
 
+[2.7.0]: https://github.com/Gordin/GameHelper2/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/Gordin/GameHelper2/compare/v2.5.2...v2.6.0
 [2.5.2]: https://github.com/Gordin/GameHelper2/compare/2.5.1...2.5.2
 [2.5.1]: https://github.com/Gordin/GameHelper2/compare/2.5.0...2.5.1

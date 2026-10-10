@@ -24,14 +24,25 @@ namespace LootValue
     using Newtonsoft.Json.Linq;
 
     /// <summary>
-    ///     LootValue plugin — prices ground, stash, and inventory items and draws their values in context.
-    ///     Unidentified uniques are revealed by name via their icon art (same bridge as RitualHelper).
+    ///     LootValue plugin — prices ground, stash, inventory, Ritual reward, and Currency Exchange items.
+    ///     Unidentified uniques are revealed by name via their icon art.
     /// </summary>
     public sealed class LootValueCore : PCore<LootValueSettings>
     {
+        /// <inheritdoc/>
+        public override IReadOnlyCollection<string> ConflictsWith => new[] { "RitualHelper" };
+
+        /// <inheritdoc/>
+        public override int ConflictPriority => 100;
+
         private const string ItemPathPrefix = "Metadata/Items";
-        private const int UiElementItemAddressOffset = 0x4F8;
+        private const string PreviousDefaultLeague = "Runes of Aldur";
+        private const string CurrentDefaultLeague = "Forbidden Rites";
+        private const int CurrentLeagueMigrationVersion = 1;
+        // PoE 0.5.5 shifted the UiElement tail (including the slot item pointer) by -0x18.
+        private const int UiElementItemAddressOffset = 0x4E0;
         private static readonly int[] CurrencyExchangeRootPath = { 114, 20, 6 };
+        private static readonly int[] RitualRewardGridPath = { 76, 13 };
 
         private readonly List<LootLabel> cachedLabels = new();
         private readonly Dictionary<uint, Tracked> trackWorld = new();
@@ -42,7 +53,9 @@ namespace LootValue
         private DateTime nextDiagUtc = DateTime.MinValue;
 
         // Loot-tag mode (anchors chips to the game's loot labels via a throttled UI-tree scan).
-        private const int UiElementTextOffset = 0x390;
+        // PoE 0.5.5 moved inline text-element wstrings by -0x30: UiElementBase lost 0x18 and
+        // the derived text class lost another 0x18. Verified live by RunecraftHelper as well.
+        private const int UiElementTextOffset = 0x360;
         private readonly List<TagChip> cachedTagChips = new();
         private readonly Dictionary<IntPtr, Tracked> trackTag = new();
         private DateTime nextTagScanUtc = DateTime.MinValue;
@@ -56,10 +69,13 @@ namespace LootValue
         private readonly HashSet<string> groundTagNames = new(StringComparer.OrdinalIgnoreCase);
         private SlotScanReport leftSlotReport = new(IntPtr.Zero);
         private SlotScanReport rightSlotReport = new(IntPtr.Zero);
+        private SlotScanReport ritualSlotReport = new(IntPtr.Zero);
         private List<SlotInfo> cachedLeftSlots = new();
         private List<SlotInfo> cachedRightSlots = new();
+        private List<SlotInfo> cachedRitualSlots = new();
         private IntPtr cachedLeftPanelAddress;
         private IntPtr cachedRightPanelAddress;
+        private IntPtr cachedRitualGridAddress;
         private DateTime nextSlotScanUtc = DateTime.MinValue;
         private readonly List<ExchangePriceLabel> cachedExchangeLabels = new();
         private DateTime nextExchangeScanUtc = DateTime.MinValue;
@@ -70,6 +86,7 @@ namespace LootValue
         public override void OnEnable(bool isGameOpened)
         {
             var shouldMigrateStashSettings = true;
+            var shouldSaveSettings = false;
             if (File.Exists(this.SettingPathname))
             {
                 try
@@ -85,13 +102,31 @@ namespace LootValue
                 }
             }
 
-            if (shouldMigrateStashSettings && this.TryMigrateStashValueSettings())
+            shouldSaveSettings |= this.TryMigrateLeagueDefault();
+            shouldSaveSettings |= shouldMigrateStashSettings && this.TryMigrateStashValueSettings();
+            if (shouldSaveSettings)
             {
                 this.SaveSettings();
             }
 
             PoeNinjaPriceFetcher.Configure(this.Settings.PriceSource, this.Settings.League ?? string.Empty, this.Settings.RefreshIntervalMin);
             PoeNinjaPriceFetcher.Initialize(this.DllDirectory);
+        }
+
+        private bool TryMigrateLeagueDefault()
+        {
+            if (this.Settings.LeagueMigrationVersion.HasValue)
+            {
+                return false;
+            }
+
+            if (string.Equals(this.Settings.League, PreviousDefaultLeague, StringComparison.OrdinalIgnoreCase))
+            {
+                this.Settings.League = CurrentDefaultLeague;
+            }
+
+            this.Settings.LeagueMigrationVersion = CurrentLeagueMigrationVersion;
+            return true;
         }
 
         private bool TryMigrateStashValueSettings()
@@ -144,8 +179,10 @@ namespace LootValue
             this.groundTagNames.Clear();
             this.cachedLeftSlots.Clear();
             this.cachedRightSlots.Clear();
+            this.cachedRitualSlots.Clear();
             this.cachedLeftPanelAddress = IntPtr.Zero;
             this.cachedRightPanelAddress = IntPtr.Zero;
+            this.cachedRitualGridAddress = IntPtr.Zero;
             this.nextSlotScanUtc = DateTime.MinValue;
             this.cachedExchangeLabels.Clear();
             this.nextExchangeScanUtc = DateTime.MinValue;
@@ -172,12 +209,13 @@ namespace LootValue
             ImGui.Checkbox(this.PluginText.Label("settings.anchor_to_loot_tags", "Anchor to loot labels (no overlap when items pile up)", "LootValueAnchorToLootTags"), ref this.Settings.AnchorToLootTags);
             ImGui.Checkbox(this.PluginText.Label("settings.show_stash_overlay", "Show value over stash items", "LootValueShowStashOverlay"), ref this.Settings.ShowStashOverlay);
             ImGui.Checkbox(this.PluginText.Label("settings.show_inventory_overlay", "Show value over inventory items", "LootValueShowInventoryOverlay"), ref this.Settings.ShowInventoryOverlay);
+            ImGui.Checkbox(this.PluginText.Label("settings.show_ritual_overlay", "Show value over Ritual rewards", "LootValueShowRitualOverlay"), ref this.Settings.ShowRitualOverlay);
             ImGui.Checkbox(this.PluginText.Label("settings.show_currency_exchange_overlay", "Show owned-stack values in Currency Exchange", "LootValueShowCurrencyExchangeOverlay"), ref this.Settings.ShowCurrencyExchangeOverlay);
             ImGui.Checkbox(this.PluginText.Label("settings.hide_when_game_unfocused", "Hide values when game is not focused", "LootValueHideWhenGameUnfocused"), ref this.Settings.HideWhenGameInBackground);
-            ImGui.Checkbox(this.PluginText.Label("settings.hide_slot_prices_on_hover", "Hide stash/inventory values while hovering an item", "LootValueHideSlotPricesOnHover"), ref this.Settings.HideSlotPricesOnHover);
+            ImGui.Checkbox(this.PluginText.Label("settings.hide_slot_prices_on_hover", "Hide item-panel values while hovering an item", "LootValueHideSlotPricesOnHover"), ref this.Settings.HideSlotPricesOnHover);
             ImGui.Checkbox(this.PluginText.Label("settings.reveal_unidentified_uniques", "Reveal unidentified uniques (by art)", "LootValueRevealUnidentifiedUniques"), ref this.Settings.RevealUnidentifiedUniques);
             ImGui.Checkbox(this.PluginText.Label("settings.diagnostics_window", "Diagnostics window", "LootValueDiagnosticsWindow"), ref this.Settings.DiagnosticsMode);
-            ImGui.Checkbox(this.PluginText.Label("settings.slot_diagnostics", "Stash/inventory slot diagnostics", "LootValueSlotDiagnostics"), ref this.Settings.ShowSlotDebugInfo);
+            ImGui.Checkbox(this.PluginText.Label("settings.slot_diagnostics", "Item-panel slot diagnostics", "LootValueSlotDiagnostics"), ref this.Settings.ShowSlotDebugInfo);
 
             ImGui.Separator();
             ImGui.Text(this.PluginText.T("section.display", "Display"));
@@ -218,6 +256,16 @@ namespace LootValue
             if (ImGui.RadioButton("poe.ninja", this.Settings.PriceSource == PoeNinjaPriceFetcher.SourcePoeNinja))
                 this.Settings.PriceSource = PoeNinjaPriceFetcher.SourcePoeNinja;
 
+            if (PoeNinjaPriceFetcher.IsUsingFallback)
+            {
+                ImGui.TextColored(
+                    new Vector4(0.9f, 0.7f, 0.2f, 1f),
+                    this.PluginText.F(
+                        "status.automatic_fallback",
+                        "Automatic fallback active: {0}",
+                        PoeNinjaPriceFetcher.ActiveSourceName));
+            }
+
             ImGui.InputText(this.PluginText.Label("settings.league", "League", "LootValueLeague"), ref this.Settings.League, 64);
             ImGui.SliderInt(this.PluginText.Label("settings.refresh_interval", "Refresh interval (min)", "LootValueRefreshInterval"), ref this.Settings.RefreshIntervalMin, 1, 120);
             if (ImGui.Button(this.PluginText.Label("button.refresh_prices_now", "Refresh prices now", "LootValueRefreshPricesNow")))
@@ -229,7 +277,16 @@ namespace LootValue
             ImGui.SameLine();
             if (PoeNinjaPriceFetcher.IsFetching)
             {
-                ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.2f, 1f), this.PluginText.T("status.loading", "Loading..."));
+                var status = PoeNinjaPriceFetcher.IsFailingOver
+                    ? this.PluginText.F(
+                        "status.switching_provider",
+                        "Switching to {0}...",
+                        PoeNinjaPriceFetcher.ActiveSourceName)
+                    : this.PluginText.F(
+                        "status.loading_provider",
+                        "Loading from {0}...",
+                        PoeNinjaPriceFetcher.ActiveSourceName);
+                ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.2f, 1f), status);
             }
             else if (PoeNinjaPriceFetcher.LastFetchUtc > DateTime.MinValue)
             {
@@ -282,7 +339,8 @@ namespace LootValue
                 this.DrawLabels();
             }
 
-            if (this.Settings.ShowStashOverlay || this.Settings.ShowInventoryOverlay || this.Settings.ShowSlotDebugInfo)
+            if (this.Settings.ShowStashOverlay || this.Settings.ShowInventoryOverlay ||
+                this.Settings.ShowRitualOverlay || this.Settings.ShowSlotDebugInfo)
             {
                 this.DrawItemSlotValues();
             }
@@ -716,7 +774,7 @@ namespace LootValue
             return true;
         }
 
-        /// <summary>Prices item slots in the open stash and inventory panels.</summary>
+        /// <summary>Prices item slots in open stash, inventory, and Ritual reward panels.</summary>
         private void DrawItemSlotValues()
         {
             var gameUi = Core.States.InGameStateObject.GameUi;
@@ -724,13 +782,17 @@ namespace LootValue
 
             var scanLeft = this.Settings.ShowStashOverlay || this.Settings.ShowSlotDebugInfo;
             var scanRight = this.Settings.ShowInventoryOverlay || this.Settings.ShowSlotDebugInfo;
+            var scanRitual = this.Settings.ShowRitualOverlay || this.Settings.ShowSlotDebugInfo;
             var leftAddress = scanLeft && gameUi.LeftPanel.IsVisible ? gameUi.LeftPanel.Address : IntPtr.Zero;
             var rightAddress = scanRight && gameUi.RightPanel.IsVisible ? gameUi.RightPanel.Address : IntPtr.Zero;
+            var ritualAddress = scanRitual ? this.ResolveVisibleRitualRewardGrid(gameUi.Address) : IntPtr.Zero;
 
-            if (leftAddress != this.cachedLeftPanelAddress || rightAddress != this.cachedRightPanelAddress)
+            if (leftAddress != this.cachedLeftPanelAddress || rightAddress != this.cachedRightPanelAddress ||
+                ritualAddress != this.cachedRitualGridAddress)
             {
                 this.cachedLeftPanelAddress = leftAddress;
                 this.cachedRightPanelAddress = rightAddress;
+                this.cachedRitualGridAddress = ritualAddress;
                 this.nextSlotScanUtc = DateTime.MinValue;
             }
 
@@ -765,19 +827,60 @@ namespace LootValue
                     this.cachedRightSlots.Clear();
                     this.rightSlotReport = new SlotScanReport(IntPtr.Zero);
                 }
+
+                if (ritualAddress != IntPtr.Zero &&
+                    PluginUiElementReflection.TryGetAbsoluteRect(ritualAddress, out var ritualPosition, out var ritualSize))
+                {
+                    this.cachedRitualSlots = this.ScanItemSlots(
+                        ritualAddress,
+                        ritualPosition,
+                        ritualSize,
+                        out this.ritualSlotReport);
+                }
+                else
+                {
+                    this.cachedRitualSlots.Clear();
+                    this.ritualSlotReport = new SlotScanReport(IntPtr.Zero);
+                }
             }
 
             var leftScroll = GetScrollFrameState(this.cachedLeftSlots);
             var rightScroll = GetScrollFrameState(this.cachedRightSlots);
+            var ritualScroll = GetScrollFrameState(this.cachedRitualSlots);
             var hidePrices = this.Settings.HideSlotPricesOnHover &&
                              (IsAnySlotHovered(this.cachedLeftSlots, leftScroll) ||
-                              IsAnySlotHovered(this.cachedRightSlots, rightScroll));
+                              IsAnySlotHovered(this.cachedRightSlots, rightScroll) ||
+                              IsAnySlotHovered(this.cachedRitualSlots, ritualScroll));
             this.DrawItemSlots(this.cachedLeftSlots, this.Settings.ShowStashOverlay, hidePrices, leftScroll);
             this.DrawItemSlots(this.cachedRightSlots, this.Settings.ShowInventoryOverlay, hidePrices, rightScroll);
+            this.DrawItemSlots(this.cachedRitualSlots, this.Settings.ShowRitualOverlay, hidePrices, ritualScroll);
             if (this.Settings.ShowSlotDebugInfo)
             {
                 this.DrawSlotDiagnosticsWindow();
             }
+        }
+
+        private IntPtr ResolveVisibleRitualRewardGrid(IntPtr gameUiAddress)
+        {
+            var candidate = this.ResolveUiPath(gameUiAddress, RitualRewardGridPath);
+            if (!this.TryGetVisibleChildren(candidate, out var tiles) || tiles.Length is < 1 or > 32)
+            {
+                return IntPtr.Zero;
+            }
+
+            // The fixed path is only accepted while at least one direct reward tile carries a valid
+            // item pointer. This prevents a future UI-tree shift from pricing an unrelated panel.
+            foreach (var tile in tiles)
+            {
+                var pointerValue = this.readIntPtrMethod?.Invoke(this.handleObj, new object[] { tile + UiElementItemAddressOffset });
+                if (pointerValue is IntPtr itemAddress && itemAddress != IntPtr.Zero &&
+                    PluginUiElementReflection.TryValidateItemAddress(itemAddress, out _, out _))
+                {
+                    return candidate;
+                }
+            }
+
+            return IntPtr.Zero;
         }
 
         private List<SlotInfo> ScanItemSlots(
@@ -1031,6 +1134,8 @@ namespace LootValue
                 this.DrawSlotScanReport(this.PluginText.T("diagnostics.slots.left_panel", "Left panel (stash)"), this.leftSlotReport);
                 ImGui.Separator();
                 this.DrawSlotScanReport(this.PluginText.T("diagnostics.slots.right_panel", "Right panel (inventory)"), this.rightSlotReport);
+                ImGui.Separator();
+                this.DrawSlotScanReport(this.PluginText.T("diagnostics.slots.ritual_rewards", "Ritual rewards"), this.ritualSlotReport);
             }
 
             ImGui.End();
@@ -1041,8 +1146,9 @@ namespace LootValue
             ImGui.TextUnformatted($"{label}: 0x{report.PanelAddress.ToInt64():X}");
             ImGui.TextUnformatted(this.PluginText.F(
                 "diagnostics.slots.summary",
-                "UI elements={0}  non-zero +0x4F8={1}  unique pointers={2}  valid items={3}  priced={4}  visible={5}  scroll views={6}  scroll Y={7:0.0}",
+                "UI elements={0}  non-zero +0x{1:X}={2}  unique pointers={3}  valid items={4}  priced={5}  visible={6}  scroll views={7}  scroll Y={8:0.0}",
                 report.VisitedElements,
+                UiElementItemAddressOffset,
                 report.NonZeroPointers,
                 report.UniquePointers,
                 report.ValidItems,
@@ -1204,7 +1310,7 @@ namespace LootValue
         }
 
         /// <summary>Resolve an item's display value + label text. Uniques price by icon art (revealing
-        /// unidentified ones); everything else by base-type name. Mirrors RitualHelper's resolution.</summary>
+        /// unidentified ones); everything else by base-type name.</summary>
         private bool TryPriceItem(Item item, out double valueEx, out string label, bool includeUniqueName = true)
         {
             valueEx = 0;

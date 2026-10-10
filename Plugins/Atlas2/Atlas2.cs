@@ -85,7 +85,6 @@
             public string Type;             // "normal" or "unique"
             public List<string> Tags;       // e.g. "lineage", "arbiter"
             public bool Drawable;
-            public bool RitualSpecial;
         }
         private readonly List<NodeData> nodeCache = new();
         private int cacheFrameCounter = int.MaxValue;   // force refresh on first frame
@@ -129,6 +128,13 @@
                 var defaults = new Atlas2Settings();
                 Settings.MapGroups = defaults.MapGroups;
                 Settings.CategorySettingsVersion = defaults.CategorySettingsVersion;
+            }
+
+            if (Settings.RitualRewardWeightsVersion.GetValueOrDefault() < 3)
+            {
+                var defaults = new Atlas2Settings();
+                Settings.RitualRewardWeights = defaults.RitualRewardWeights;
+                Settings.RitualRewardWeightsVersion = 3;
             }
 
             LoadBiomeMap();
@@ -397,7 +403,7 @@
                 allCenters[nd.GridPosition] = nu.Position + nu.Size * 0.5f;
             }
 
-            bool ritualLineMode = Read<byte>(atlasUi.Address + 0x637) != 0;
+            bool ritualLineMode = Read<byte>(atlasUi.Address + PanelLineModeOffset) != 0;
             ritualHoverGrid = nodeCache.Where(node => node.State == AtlasNodeState.AccessibleNow)
                 .Select(node => (Node: node, Ui: atlasUi[node.Index]))
                 .Where(entry => entry.Ui != null && ImGui.GetMousePos().X >= entry.Ui.Position.X &&
@@ -746,6 +752,12 @@
                 if (map.Index < 0 || map.Index >= atlasCount)
                     continue;
 
+                var mapName = NormalizeName(map.DisplayName);
+                var hasGraphIdentity = map.ConnectedGridPositions.Count > 0;
+                var drawable = !string.IsNullOrWhiteSpace(mapName) || hasGraphIdentity;
+                if (string.IsNullOrWhiteSpace(mapName) && hasGraphIdentity)
+                    mapName = $"Unknown Map [{map.Index}]";
+
                 nodeCache.Add(new NodeData
                 {
                     Index = map.Index,
@@ -753,7 +765,7 @@
                     GridPosition = map.GridPosition,
                     ConnectedGridPositions = map.ConnectedGridPositions.ToList(),
                     InternalId = map.MapId,
-                    MapName = NormalizeName(map.DisplayName),
+                    MapName = mapName,
                     BiomeId = map.BiomeId,
                     State = ToAtlasNodeState(map.State),
                     BadgeCount = map.BadgeCount,
@@ -770,8 +782,7 @@
                         .Where(icon => !string.IsNullOrWhiteSpace(icon)).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
                     Type = map.Type ?? "normal",
                     Tags = map.Tags.ToList(),
-                    Drawable = !string.IsNullOrWhiteSpace(map.DisplayName),
-                    RitualSpecial = IsRitualSpecialNode(map.Address),
+                    Drawable = drawable,
                 });
             }
             cachedAtlasCount = atlasCount;
@@ -955,18 +966,6 @@
 
                 fogShipIcons.Add((group.Key, center, height * 0.5f));
             }
-        }
-
-        private static bool IsRitualSpecialNode(IntPtr address)
-        {
-            // yokkenUA found this by following the game's ritual-line reach check: node+0x300
-            // points to the per-map data row, whose category at +0x7C is zero for normal maps.
-            // The game rejects every nonzero category (unique maps, hideouts, towers, citadels,
-            // and league bosses), making this authoritative compared with guessing from map tags.
-            if (address == IntPtr.Zero)
-                return true;
-            var row = Read<IntPtr>(address + 0x300);
-            return row == IntPtr.Zero || Read<int>(row + 0x7C) != 0;
         }
 
         private void DrawUnchartedLeylines(ImDrawListPtr drawList, UiElementBase atlasUi, RectangleF panelRect,
@@ -1163,8 +1162,10 @@
             }
             public void Dispose()
             {
-                ImGui.PopFont();
+                // PopFont rebinds the previous font and recomputes its size from Scale. Restore
+                // the shared font first so this scope cannot resize later GameHelper windows.
                 _font.Scale = _prevScale;
+                ImGui.PopFont();
             }
         }
 
